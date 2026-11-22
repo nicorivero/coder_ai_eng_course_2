@@ -100,13 +100,22 @@ def build_chain(config: LLMConfig) -> Runnable:
     )
 
 
+def _env(name: str) -> str | None:
+    """Devuelve la variable de entorno sin espacios, o None si no existe o está vacía."""
+    value = (os.getenv(name) or "").strip()
+    return value or None
+
+
 @lru_cache(maxsize=1)
 def _load_config() -> LLMConfig:
-    return LLMConfig(
-        provider=os.getenv("LLM_PROVIDER"),
-        model=os.getenv("LLM_MODEL"),
-        max_tokens=os.getenv("LLM_MAX_TOKENS", "1024"),
-    )
+    provider = _env("LLM_PROVIDER")
+    values = {
+        "provider": provider.lower() if provider else None,
+        "model": _env("LLM_MODEL"),
+        "max_tokens": _env("LLM_MAX_TOKENS"),
+    }
+    # Las variables vacías no se pasan, así aplican los defaults de LLMConfig.
+    return LLMConfig(**{key: value for key, value in values.items() if value is not None})
 
 
 # Cacheada para crear el cliente y la cadena una sola vez y reutilizarlos entre llamadas.
@@ -120,9 +129,9 @@ async def process_text(text: str) -> ExtraccionTecnica:
     if not text or not text.strip():
         raise ValueError("text must not be empty")
 
-    config = _load_config()
-    logger.info("Procesando texto (%d caracteres) con %s/%s", len(text), config.provider, config.model)
     try:
+        config = _load_config()
+        logger.info("Procesando texto (%d caracteres) con %s/%s", len(text), config.provider, config.model)
         result = await _get_chain().ainvoke({"text": text})
     except InvalidOutputError as e:
         logger.error("Extracción fallida tras %d intentos: %s", MAX_ATTEMPTS, e)
