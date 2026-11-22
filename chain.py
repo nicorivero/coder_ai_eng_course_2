@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from functools import lru_cache
@@ -118,10 +119,17 @@ def _load_config() -> LLMConfig:
     return LLMConfig(**{key: value for key, value in values.items() if value is not None})
 
 
-# Cacheada para crear el cliente y la cadena una sola vez y reutilizarlos entre llamadas.
-@lru_cache(maxsize=1)
+# Cadena cacheada junto con su event loop: el cliente HTTP async queda atado al loop que abrió sus conexiones,
+# así que se reutiliza dentro del mismo loop y se reconstruye si cambia (ej. varios asyncio.run()).
+_chain_cache: tuple[asyncio.AbstractEventLoop, Runnable] | None = None
+
+
 def _get_chain() -> Runnable:
-    return build_chain(_load_config())
+    global _chain_cache
+    loop = asyncio.get_running_loop()
+    if _chain_cache is None or _chain_cache[0] is not loop:
+        _chain_cache = (loop, build_chain(_load_config()))
+    return _chain_cache[1]
 
 
 async def process_text(text: str) -> ExtraccionTecnica:
