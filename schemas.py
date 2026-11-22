@@ -12,8 +12,9 @@ class Criticidad(StrEnum):
     ALTA = "alta"
 
 
+# Contrato de salida del pipeline. El docstring y las descripciones de los campos se envían al LLM como parte del schema.
 class ExtraccionTecnica(BaseModel):
-    """Contrato de salida del pipeline. Las descripciones de los campos se envían al LLM como parte del schema."""
+    """Entidades técnicas extraídas de un texto técnico: descripción de arquitectura, log de error o incidente."""
 
     tecnologias: list[str] = Field(
         min_length=1,
