@@ -96,8 +96,9 @@ En ambos casos los errores de truncado y de parseo llegan al paso de validación
 El paso `_ensure_complete` revisa la respuesta cruda **antes** de aceptar el objeto:
 
 1. Lee el motivo de corte. Usa primero `normalized_finish_reason`, el campo que LangChain unifica para todos los proveedores (la Responses API de OpenAI, por ejemplo, reporta `finish_reason="incomplete"`), y como respaldo `finish_reason` (OpenAI) o `stop_reason` (Anthropic). Si es `length`, `max_tokens` o `context_exceeded`, la respuesta se cortó y el JSON puede estar incompleto: se lanza `InvalidOutputError`.
-2. Si hubo error de parseo o validación de Pydantic, o no se obtuvo objeto, también se lanza `InvalidOutputError`.
-3. Si todo está bien, devuelve el `ExtraccionTecnica` validado.
+2. Si el motivo es `refusal` (el modelo se negó a responder), se lanza `RefusedOutputError`.
+3. Si hubo error de parseo o validación de Pydantic, o no se obtuvo objeto, se lanza `InvalidOutputError`. Cuando no hay error de parseo pero tampoco objeto, el mensaje indica el motivo de corte para facilitar el diagnóstico.
+4. Si todo está bien, devuelve el `ExtraccionTecnica` validado.
 
 Gracias al método elegido por proveedor (sección anterior), el motivo de corte llega a este paso tanto en OpenAI como en Anthropic, en lugar de convertirse en una excepción del SDK.
 
@@ -113,7 +114,7 @@ chain.with_retry(
 
 Hay dos niveles de reintento separados:
 
-- **Cadena (`with_retry`)**: reintenta solo ante `InvalidOutputError` (JSON mal formado, incompleto, truncado o que no cumple el schema), con backoff exponencial. Errores como una API key inválida no se reintentan porque no se resuelven repitiendo la llamada.
+- **Cadena (`with_retry`)**: reintenta solo ante `InvalidOutputError` (JSON mal formado, incompleto, truncado o que no cumple el schema), con backoff exponencial. Errores como una API key inválida no se reintentan porque no se resuelven repitiendo la llamada. Tampoco se reintentan las negativas del modelo (`RefusedOutputError`): repetir el mismo pedido da el mismo resultado y solo gasta tokens.
 - **SDK (`max_retries`)**: los clientes de OpenAI y Anthropic ya reintentan errores de red, rate limit y errores 5xx.
 
 ### 7. Función asíncrona `process_text()`
@@ -126,7 +127,7 @@ result = await process_text("texto a analizar")
 
 - Rechaza textos vacíos.
 - Ejecuta la cadena con `.ainvoke()`; la cadena se construye una sola vez y se reutiliza entre llamadas.
-- Devuelve el `ExtraccionTecnica` validado o relanza el error si se agotaron los intentos.
+- Devuelve el `ExtraccionTecnica` validado o relanza el error si se agotaron los intentos, si el modelo se negó a responder o si la configuración es inválida (en todos los casos queda registrado en los logs).
 
 ### 8. Logs
 
@@ -157,9 +158,11 @@ Completar en `.env` la API key del proveedor elegido:
 | Variable | Descripción |
 |---|---|
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | API key del proveedor que se vaya a usar. |
-| `LLM_PROVIDER` | `openai` o `anthropic`. |
+| `LLM_PROVIDER` | `openai` o `anthropic` (sin distinguir mayúsculas). |
 | `LLM_MODEL` | Modelo del proveedor elegido. |
-| `LLM_MAX_TOKENS` | Tope de tokens de salida. |
+| `LLM_MAX_TOKENS` | Tope de tokens de salida; si se deja vacío se usa el valor por defecto de `LLMConfig`. |
+
+Si falta una variable obligatoria o tiene un valor inválido, `process_text` registra el error en los logs y lo relanza.
 
 Ejecutar el mini-script de prueba:
 
