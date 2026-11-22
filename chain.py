@@ -18,6 +18,9 @@ MAX_ATTEMPTS = 3
 # y crudos del proveedor como respaldo (Chat Completions: "length", Anthropic: "max_tokens").
 _TRUNCATION_REASONS = {"length", "context_exceeded", "max_tokens"}
 
+# Motivos deterministas (negativa del modelo o filtro de contenido): reintentar daría el mismo resultado.
+_FAIL_FAST_REASONS = {"refusal", "content_filter"}
+
 # Métodos con los que el truncado y los errores de parseo llegan a _ensure_complete en vez de lanzarse dentro
 # del modelo (json_schema de OpenAI lanza LengthFinishReasonError; tool calling forzado no anda en Claude actual).
 _STRUCTURED_OUTPUT_METHOD = {"openai": "function_calling", "anthropic": "json_schema"}
@@ -52,7 +55,7 @@ class InvalidOutputError(Exception):
 
 
 class RefusedOutputError(Exception):
-    """El modelo se negó a responder; no se reintenta porque repetir el mismo pedido da el mismo resultado."""
+    """El modelo se negó a responder o el proveedor filtró la respuesta; no se reintenta porque daría el mismo resultado."""
 
 
 def _ensure_complete(result: dict[str, Any]) -> ExtraccionTecnica:
@@ -71,9 +74,9 @@ def _ensure_complete(result: dict[str, Any]) -> ExtraccionTecnica:
         logger.warning("Respuesta truncada por límite de tokens; se descarta el intento")
         raise InvalidOutputError(f"respuesta truncada (finish_reason={finish_reason})")
 
-    if finish_reason == "refusal":
-        logger.warning("El modelo se negó a responder; no se reintenta")
-        raise RefusedOutputError("el modelo se negó a procesar el texto")
+    if finish_reason in _FAIL_FAST_REASONS:
+        logger.warning("El modelo rechazó o filtró la respuesta (finish_reason=%s); no se reintenta", finish_reason)
+        raise RefusedOutputError(f"el modelo rechazó o filtró la respuesta (finish_reason={finish_reason})")
 
     parsing_error = result["parsing_error"]
     if parsing_error is not None or result["parsed"] is None:
@@ -143,6 +146,9 @@ async def process_text(text: str) -> ExtraccionTecnica:
         result = await _get_chain().ainvoke({"text": text})
     except InvalidOutputError as e:
         logger.error("Extracción fallida tras %d intentos: %s", MAX_ATTEMPTS, e)
+        raise
+    except RefusedOutputError as e:
+        logger.error("Extracción rechazada por el modelo: %s", e)
         raise
     except Exception:
         logger.exception("Error no recuperable durante la extracción")
