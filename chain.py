@@ -13,8 +13,13 @@ logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
 
-# Motivos de corte que indican respuesta truncada por límite de tokens (OpenAI: "length", Anthropic: "max_tokens").
-_TRUNCATION_REASONS = {"length", "max_tokens"}
+# Motivos de corte que indican respuesta truncada: normalizados por LangChain ("length", "context_exceeded")
+# y crudos del proveedor como respaldo (Chat Completions: "length", Anthropic: "max_tokens").
+_TRUNCATION_REASONS = {"length", "context_exceeded", "max_tokens"}
+
+# Métodos con los que el truncado y los errores de parseo llegan a _ensure_complete en vez de lanzarse dentro
+# del modelo (json_schema de OpenAI lanza LengthFinishReasonError; tool calling forzado no anda en Claude actual).
+_STRUCTURED_OUTPUT_METHOD = {"openai": "function_calling", "anthropic": "json_schema"}
 
 FORMAT_INSTRUCTIONS = """\
 - tecnologias: nombres de tecnologías, lenguajes, frameworks, bases de datos, colas, servicios cloud o \
@@ -49,7 +54,10 @@ def _ensure_complete(result: dict[str, Any]) -> ExtraccionTecnica:
     """Valida la salida cruda del modelo antes de aceptarla: detecta truncado por tokens y errores de parseo."""
     raw = result["raw"]
     metadata = raw.response_metadata
-    finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+    # El campo normalizado unifica proveedores y APIs (la Responses API de OpenAI reporta finish_reason="incomplete").
+    finish_reason = (
+        metadata.get("normalized_finish_reason") or metadata.get("finish_reason") or metadata.get("stop_reason")
+    )
     usage = raw.usage_metadata or {}
     logger.info("Respuesta recibida (finish_reason=%s, output_tokens=%s)", finish_reason, usage.get("output_tokens"))
 
@@ -70,7 +78,9 @@ def build_chain(config: LLMConfig) -> Runnable:
     """Arma la cadena LCEL: prompt | modelo con salida estructurada | validación, con reintento automático."""
     model = build_chat_model(config)
     # include_raw=True devuelve el AIMessage original (para leer finish_reason) y captura errores de parseo.
-    structured_model = model.with_structured_output(ExtraccionTecnica, include_raw=True)
+    structured_model = model.with_structured_output(
+        ExtraccionTecnica, include_raw=True, method=_STRUCTURED_OUTPUT_METHOD[config.provider]
+    )
     chain = PROMPT | structured_model | RunnableLambda(_ensure_complete)
     # Solo se reintentan salidas inválidas; los errores de red/API ya los reintenta el SDK (max_retries).
     return chain.with_retry(

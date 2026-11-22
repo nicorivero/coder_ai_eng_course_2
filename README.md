@@ -74,19 +74,32 @@ No hay f-strings dentro de la cadena: LangChain resuelve las variables, lo que m
 ### 4. Cadena LCEL (`chain.py`)
 
 ```python
-structured_model = model.with_structured_output(ExtraccionTecnica, include_raw=True)
+structured_model = model.with_structured_output(
+    ExtraccionTecnica, include_raw=True, method=_STRUCTURED_OUTPUT_METHOD[config.provider]
+)
 chain = PROMPT | structured_model | RunnableLambda(_ensure_complete)
 ```
 
-`with_structured_output()` hace que el proveedor devuelva datos ajustados al schema (tool calling / JSON schema) y los parsea a `ExtraccionTecnica`. Con `include_raw=True` la salida incluye también el mensaje original del modelo y el error de parseo, si lo hubo, en lugar de lanzarlo directamente.
+`with_structured_output()` hace que el proveedor devuelva datos ajustados al schema y los parsea a `ExtraccionTecnica`. Con `include_raw=True` la salida incluye también el mensaje original del modelo y el error de parseo, si lo hubo, en lugar de lanzarlo directamente.
+
+El método de salida estructurada se elige por proveedor:
+
+| Proveedor | Método | Motivo |
+|---|---|---|
+| OpenAI | `function_calling` | El método `json_schema` usa `parse()` del SDK, que lanza `LengthFinishReasonError` ante un truncado antes de que la cadena pueda inspeccionarlo y reintentar. Con tool calling (no estricto) el `finish_reason` llega intacto. |
+| Anthropic | `json_schema` | Structured outputs nativo. Los modelos Claude actuales no admiten tool calling forzado, y en ese modo LangChain lanza la excepción dentro de la llamada al modelo, sin pasar por la validación ni el reintento. |
+
+En ambos casos los errores de truncado y de parseo llegan al paso de validación, que decide si reintentar.
 
 ### 5. Detección de respuestas incompletas (`finish_reason`)
 
 El paso `_ensure_complete` revisa la respuesta cruda **antes** de aceptar el objeto:
 
-1. Lee el motivo de corte (`finish_reason` en OpenAI, `stop_reason` en Anthropic). Si es `length` o `max_tokens`, el modelo se quedó sin tokens y el JSON puede estar cortado: se lanza `InvalidOutputError`.
+1. Lee el motivo de corte. Usa primero `normalized_finish_reason`, el campo que LangChain unifica para todos los proveedores (la Responses API de OpenAI, por ejemplo, reporta `finish_reason="incomplete"`), y como respaldo `finish_reason` (OpenAI) o `stop_reason` (Anthropic). Si es `length`, `max_tokens` o `context_exceeded`, la respuesta se cortó y el JSON puede estar incompleto: se lanza `InvalidOutputError`.
 2. Si hubo error de parseo o validación de Pydantic, o no se obtuvo objeto, también se lanza `InvalidOutputError`.
 3. Si todo está bien, devuelve el `ExtraccionTecnica` validado.
+
+Gracias al método elegido por proveedor (sección anterior), el motivo de corte llega a este paso tanto en OpenAI como en Anthropic, en lugar de convertirse en una excepción del SDK.
 
 ### 6. Resiliencia (`.with_retry()`)
 
@@ -121,7 +134,7 @@ Con `logging` en nivel `INFO` se puede seguir todo el proceso:
 
 ```
 INFO chain: Procesando texto (312 caracteres) con anthropic/claude-opus-5-5
-INFO chain: Respuesta recibida (finish_reason=tool_use, output_tokens=142)
+INFO chain: Respuesta recibida (finish_reason=stop, output_tokens=142)
 INFO chain: Salida validada contra el schema ExtraccionTecnica
 INFO chain: Extracción exitosa: 4 tecnologías, criticidad alta
 ```
