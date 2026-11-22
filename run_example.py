@@ -30,8 +30,9 @@ EXAMPLES = {
 async def main() -> None:
     load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    # Silencia los logs HTTP de los SDKs para que se vean solo los del pipeline.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # Silencia los logs HTTP de los SDKs para que se vean solo los del pipeline (las versiones actuales usan httpx2).
+    for http_logger in ("httpx", "httpx2"):
+        logging.getLogger(http_logger).setLevel(logging.WARNING)
 
     for title, text in EXAMPLES.items():
         print(f"\n=== {title} ===")
