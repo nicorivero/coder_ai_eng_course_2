@@ -50,6 +50,10 @@ class InvalidOutputError(Exception):
     """Salida del LLM truncada, mal formada o que no cumple el schema; es la única excepción que se reintenta."""
 
 
+class RefusedOutputError(Exception):
+    """El modelo se negó a responder; no se reintenta porque repetir el mismo pedido da el mismo resultado."""
+
+
 def _ensure_complete(result: dict[str, Any]) -> ExtraccionTecnica:
     """Valida la salida cruda del modelo antes de aceptarla: detecta truncado por tokens y errores de parseo."""
     raw = result["raw"]
@@ -66,9 +70,15 @@ def _ensure_complete(result: dict[str, Any]) -> ExtraccionTecnica:
         logger.warning("Respuesta truncada por límite de tokens; se descarta el intento")
         raise InvalidOutputError(f"respuesta truncada (finish_reason={finish_reason})")
 
-    if result["parsing_error"] is not None or result["parsed"] is None:
-        logger.warning("La salida no cumple el schema: %s", result["parsing_error"])
-        raise InvalidOutputError(f"salida inválida: {result['parsing_error']}") from result["parsing_error"]
+    if finish_reason == "refusal":
+        logger.warning("El modelo se negó a responder; no se reintenta")
+        raise RefusedOutputError("el modelo se negó a procesar el texto")
+
+    parsing_error = result["parsing_error"]
+    if parsing_error is not None or result["parsed"] is None:
+        detail = parsing_error or f"el modelo no devolvió un objeto estructurado (finish_reason={finish_reason})"
+        logger.warning("La salida no cumple el schema: %s", detail)
+        raise InvalidOutputError(f"salida inválida: {detail}") from parsing_error
 
     logger.info("Salida validada contra el schema %s", ExtraccionTecnica.__name__)
     return result["parsed"]
