@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda
 
-from llm import build_chat_model
+from llm import build_chat_model, structured_output_method
 from schemas import ExtraccionTecnica, LLMConfig
 
 logger = logging.getLogger(__name__)
@@ -20,10 +20,6 @@ _TRUNCATION_REASONS = {"length", "context_exceeded", "max_tokens"}
 
 # Motivos deterministas (negativa del modelo o filtro de contenido): reintentar daría el mismo resultado.
 _FAIL_FAST_REASONS = {"refusal", "content_filter"}
-
-# Métodos con los que el truncado y los errores de parseo llegan a _ensure_complete en vez de lanzarse dentro
-# del modelo (json_schema de OpenAI lanza LengthFinishReasonError; tool calling forzado no anda en Claude actual).
-_STRUCTURED_OUTPUT_METHOD = {"openai": "function_calling", "anthropic": "json_schema"}
 
 FORMAT_INSTRUCTIONS = """\
 - tecnologias: nombres de tecnologías, lenguajes, frameworks, bases de datos, colas, servicios cloud o \
@@ -93,7 +89,7 @@ def build_chain(config: LLMConfig) -> Runnable:
     model = build_chat_model(config)
     # include_raw=True devuelve el AIMessage original (para leer finish_reason) y captura errores de parseo.
     structured_model = model.with_structured_output(
-        ExtraccionTecnica, include_raw=True, method=_STRUCTURED_OUTPUT_METHOD[config.provider]
+        ExtraccionTecnica, include_raw=True, method=structured_output_method(config.provider)
     )
     chain = PROMPT | structured_model | RunnableLambda(_ensure_complete)
     # Solo se reintentan salidas inválidas; los errores de red/API ya los reintenta el SDK (max_retries).
