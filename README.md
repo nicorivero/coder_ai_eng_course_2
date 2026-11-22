@@ -10,13 +10,13 @@ Entrada:
 
 > Nuestra API está construida con FastAPI y usa Redis como caché de sesiones. La persistencia se hace en PostgreSQL a través de SQLAlchemy. En los picos de tráfico el pool de conexiones a la base se agota y las respuestas superan los 5 segundos, lo que provoca timeouts en el frontend.
 
-Salida:
+Salida real (OpenAI, `gpt-6.1-terra`):
 
 ```json
 {
   "tecnologias": ["FastAPI", "Redis", "PostgreSQL", "SQLAlchemy"],
-  "nivel_de_criticidad": "alta",
-  "resumen_tecnico": "API FastAPI con caché en Redis y persistencia en PostgreSQL; el pool de conexiones se agota en picos de tráfico y genera timeouts."
+  "nivel_de_criticidad": "media",
+  "resumen_tecnico": "En los picos de tráfico se agota el pool de conexiones a PostgreSQL, lo que eleva los tiempos de respuesta de la API FastAPI por encima de cinco segundos y provoca timeouts en el frontend."
 }
 ```
 
@@ -130,13 +130,13 @@ result = await process_text("texto a analizar")
 
 ### 8. Logs
 
-Con `logging` en nivel `INFO` se puede seguir todo el proceso:
+Con `logging` en nivel `INFO` se puede seguir todo el proceso (salida real del primer caso):
 
 ```
-INFO chain: Procesando texto (312 caracteres) con anthropic/claude-opus-5-5
-INFO chain: Respuesta recibida (finish_reason=stop, output_tokens=142)
+INFO chain: Procesando texto (283 caracteres) con openai/gpt-6.1-terra
+INFO chain: Respuesta recibida (finish_reason=tool_call, output_tokens=114)
 INFO chain: Salida validada contra el schema ExtraccionTecnica
-INFO chain: Extracción exitosa: 4 tecnologías, criticidad alta
+INFO chain: Extracción exitosa: 4 tecnologías, criticidad media
 ```
 
 Cuando un intento falla se ve un `WARNING` con el motivo (truncado o error de schema), seguido de un nuevo intento; si se agotan los intentos queda un `ERROR` con el detalle.
@@ -173,6 +173,39 @@ Procesa tres casos e imprime el JSON validado de cada uno:
 2. **Log de error**: excepción de `asyncpg` en un worker que consume de Kafka.
 3. **Texto ambiguo (prueba de estrés)**: un reporte vago sin tecnologías explícitas ni impacto claro, para observar si el modelo genera una salida válida o si el validador fuerza reintentos.
 
+Resultados reales de los casos 2 y 3 (OpenAI, `gpt-6.1-terra`; el caso 1 está en [Ejemplo de salida](#ejemplo-de-salida)). Los tres se validaron en el primer intento:
+
+```json
+{
+  "tecnologias": ["asyncpg", "Kafka"],
+  "nivel_de_criticidad": "media",
+  "resumen_tecnico": "El consumidor de pagos falló al insertar un registro por una violación de clave única. Se agotaron cinco reintentos y, al no confirmarse el offset de Kafka, el mensaje se volverá a entregar."
+}
+```
+
+```json
+{
+  "tecnologias": ["base de datos", "red"],
+  "nivel_de_criticidad": "media",
+  "resumen_tecnico": "El sistema presenta lentitud intermitente por la mañana, que se resuelve sola. Se sospecha de la base de datos o la red, pero la causa no está confirmada."
+}
+```
+
+En el texto ambiguo, como no hay tecnologías explícitas, el modelo devolvió categorías técnicas inferidas (según las instrucciones del prompt) en lugar de una lista vacía, y el resumen deja claro que la causa no está confirmada.
+
 ### Probar la detección de truncado
 
-Para ver en acción la detección de `finish_reason` y los reintentos, bajar `LLM_MAX_TOKENS` a un valor muy chico (por ejemplo `20`) y volver a ejecutar el script. En los logs se verán los `WARNING` de respuesta truncada en cada intento y, al agotarse los intentos, el `ERROR` final con `InvalidOutputError`.
+Para ver en acción la detección de `finish_reason` y los reintentos, bajar `LLM_MAX_TOKENS` a un valor muy chico (por ejemplo `20`) y volver a ejecutar el script. Salida real con `LLM_MAX_TOKENS=20` sobre el log de error:
+
+```
+INFO chain: Procesando texto (405 caracteres) con openai/gpt-6.1-terra
+INFO chain: Respuesta recibida (finish_reason=length, output_tokens=20)
+WARNING chain: Respuesta truncada por límite de tokens; se descarta el intento
+INFO chain: Respuesta recibida (finish_reason=length, output_tokens=20)
+WARNING chain: Respuesta truncada por límite de tokens; se descarta el intento
+INFO chain: Respuesta recibida (finish_reason=length, output_tokens=20)
+WARNING chain: Respuesta truncada por límite de tokens; se descarta el intento
+ERROR chain: Extracción fallida tras 3 intentos: respuesta truncada (finish_reason=length)
+```
+
+Cada intento truncado se descarta antes de parsear, la cadena reintenta con backoff y, al agotarse los intentos, `process_text` relanza `InvalidOutputError`.
